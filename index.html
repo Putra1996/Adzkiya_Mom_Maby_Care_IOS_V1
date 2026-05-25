@@ -514,7 +514,7 @@
         .percent-badge { font-size: 18px; font-weight: 800; color: var(--theme-color); margin-top: -5px; display: none; }
     </style>
 </head>
-<body onload="verifyLicenseGateKey()">
+<body onload="initializeAppCore()">
 
 <div id="dbLoaderComponent" class="db-loader-backdrop">
     <div class="db-loader-card">
@@ -1253,61 +1253,36 @@
         
         reader.onload = function(e) {
             try {
-                let importedObj = JSON.parse(e.target.result);
-                let finalRecap = [];
-                let finalReservations = [];
-                let finalLogo = "";
-
-                // Deteksi Array Transaksi Mentah Langsung (Format file Backup_Ledger_Adzkiya milik user)
-                if (Array.isArray(importedObj)) {
-                    if (importedObj.length > 0) {
-                        let sample = importedObj[0];
-                        let keys = Object.keys(sample).join('').toLowerCase();
-                        if (keys.includes('bulan') || keys.includes('layanan') || keys.includes('total') || keys.includes('nama')) {
-                            finalRecap = importedObj;
-                        } else {
-                            finalReservations = importedObj;
-                        }
-                    }
-                } else if (importedObj && typeof importedObj === 'object') {
-                    finalRecap = importedObj.recap || importedObj.recap_data || [];
-                    finalReservations = importedObj.reservations || importedObj.reservation_data || [];
-                    finalLogo = importedObj.savedLogo || importedObj.logo || "";
-                    
-                    if (finalRecap.length === 0 && importedObj.data && Array.isArray(importedObj.data)) {
-                        finalRecap = importedObj.data;
-                    }
-                }
-
-                if (finalRecap.length > 0 || finalReservations.length > 0) {
-                    animatePercentageCounter(0, 100, 1200, 
+                const importedObj = JSON.parse(e.target.result);
+                if (importedObj.reservations && importedObj.recap) {
+                    animatePercentageCounter(0, 100, 1800, 
                         (currentValue) => { updateLoaderPercentage(currentValue); },
                         () => {
-                            localStorage.setItem("adzkiya_reservation_data", JSON.stringify(finalReservations));
-                            localStorage.setItem("adzkiya_recap_data", JSON.stringify(finalRecap));
+                            localStorage.setItem("adzkiya_reservation_data", JSON.stringify(importedObj.reservations));
+                            localStorage.setItem("adzkiya_recap_data", JSON.stringify(importedObj.recap));
                             
-                            if (finalLogo) {
-                                base64LogoDataStream = finalLogo;
+                            if (importedObj.savedLogo) {
+                                base64LogoDataStream = importedObj.savedLogo;
                                 const uiWatermark = document.getElementById('uiWatermarkView');
-                                if (uiWatermark) {
-                                    uiWatermark.src = base64LogoDataStream;
-                                    uiWatermark.style.display = "block";
-                                }
+                                uiWatermark.src = base64LogoDataStream;
+                                uiWatermark.style.display = "block";
                             }
                             
-                            endDatabaseAnimationLoader(true, "Restorasi berkas sukses dimasukkan!", () => {
+                            endDatabaseAnimationLoader(true, "Restorasi data offline berhasil!", () => {
                                 loadReservationRecords();
                                 loadRecapRecords();
                                 calculateLiveTotalBill();
                             });
+                            input.value = "";
                         }
                     );
                 } else {
-                    endDatabaseAnimationLoader(false, "Berkas kosong atau format tidak cocok.");
-                    alert("Gagal: Berkas JSON tidak berisi array transaksi yang valid.");
+                    endDatabaseAnimationLoader(false, "Format skema berkas JSON tidak sesuai.");
+                    input.value = "";
                 }
             } catch (err) {
-                endDatabaseAnimationLoader(false, "Gagal mengurai enkripsi berkas data.");
+                endDatabaseAnimationLoader(false, "Gagal parsing file JSON rusak.");
+                input.value = "";
             }
         };
         reader.readAsText(file);
@@ -1346,12 +1321,12 @@
             .then(response => response.json())
             .then(res => {
                 serverResponded = true;
-                if (res.status === "success" || res.message === "success") {
+                if (res.status === "success") {
                     animatePercentageCounter(currentSimulatedProgress, 100, 400, (val) => { updateLoaderPercentage(val); }, () => {
                         endDatabaseAnimationLoader(true, "Data aman tersimpan di Google Drive!");
                     });
                 } else {
-                    endDatabaseAnimationLoader(false, "Gagal: " + (res.message || "Respon eksternal tidak diketahui"));
+                    endDatabaseAnimationLoader(false, "Gagal: " + res.message);
                 }
             })
             .catch(err => {
@@ -1373,105 +1348,107 @@
                 mode: "cors",
                 redirect: "follow"
             })
-            .then(response => response.text())
-            .then(textMentah => {
+            .then(response => response.json())
+            .then(res => {
                 serverResponded = true;
                 
-                if (textMentah.trim().startsWith("<!DOCTYPE") || textMentah.includes("google-signin") || textMentah.includes("Login")) {
-                    endDatabaseAnimationLoader(false, "Akses Google Apps Script Terblokir.");
-                    alert("⚠️ KESALAHAN DEPLOYMENT APPS SCRIPT:\n\nServer mengembalikan halaman web login Google, bukan data JSON.\n\nSolusi Penting:\n1. Buka Google Apps Script Anda.\n2. Klik 'Deploy' -> 'Manage Deployments'.\n3. Ubah bagian 'Who has access' menjadi 'Anyone' (Semua Orang), lalu klik Deploy.\n4. Salin kembali link Web App yang BARU.");
-                    return;
-                }
-
-                let res;
-                try {
-                    res = JSON.parse(textMentah);
-                } catch(e) {
-                    let cleanJsonStr = textMentah.match(/\{.*\}/s) || textMentah.match(/\[.*?\]/s);
-                    if (cleanJsonStr) { try { res = JSON.parse(cleanJsonStr[0]); } catch(err2){} }
-                }
-
-                if (!res) {
-                    endDatabaseAnimationLoader(false, "Format data dari server salah.");
-                    alert("⚠️ RESPON KANVAS SERVER BUKAN DATA VALID:\n\nFormat respons tidak dikenali.");
-                    return;
-                }
-
                 let detectedRecap = [];
                 let detectedReservations = [];
 
-                // Cek format array murni langsung
-                if (Array.isArray(res)) {
-                    if (res.length > 0) {
-                        let sample = res[0];
-                        let keys = Object.keys(sample).join('').toLowerCase();
-                        if (keys.includes('bulan') || keys.includes('layanan') || keys.includes('total')) {
-                            detectedRecap = res;
-                        } else {
-                            detectedReservations = res;
-                        }
-                    }
-                } else if (res && typeof res === 'object') {
-                    let kumpulArray = [];
-                    function cariArray(obj) {
-                        if (!obj || typeof obj !== 'object') return;
-                        if (Array.isArray(obj)) { if (obj.length > 0) kumpulArray.push(obj); return; }
-                        for (let k in obj) {
-                            if (obj.hasOwnProperty(k)) {
-                                let v = obj[k];
-                                if (typeof v === 'string' && (v.trim().startsWith('[') || v.trim().startsWith('{'))) {
-                                    try { cariArray(JSON.parse(v)); } catch(e){}
-                                } else if (typeof v === 'object' && v !== null) { cariArray(v); }
+                // 1. Fungsi pemanen rekursif mendalam untuk objek JSON
+                function harvestArrays(obj) {
+                    if (!obj || typeof obj !== 'object') return;
+                    
+                    if (Array.isArray(obj)) {
+                        if (obj.length > 0) {
+                            let sample = obj[0];
+                            if (sample && typeof sample === 'object' && !Array.isArray(sample)) {
+                                if ('kelompokBulan' in sample || 'layanan' in sample || 'total' in sample || 'subtotal' in sample) {
+                                    detectedRecap = obj;
+                                } else if ('waktuISO' in sample || 'kategori' in sample || 'waktuReservasi' in sample || 'namaPasien' in sample) {
+                                    if (!detectedReservations.length) detectedReservations = obj;
+                                }
+                            } else if (Array.isArray(sample) || typeof sample === 'string') {
+                                if (!detectedRecap.length) detectedRecap = obj;
                             }
                         }
+                        return;
                     }
-                    cariArray(res);
 
-                    if (kumpulArray.length > 0) {
-                        kumpulArray.sort((a,b) => b.length - a.length);
-                        let idxR = kumpulArray.findIndex(arr => {
-                            if(arr.length > 0 && typeof arr[0] === 'object') {
-                                return Object.keys(arr[0]).join('').toLowerCase().includes('bulan') || Object.keys(arr[0]).join('').toLowerCase().includes('layanan');
+                    for (let key in obj) {
+                        if (obj.hasOwnProperty(key)) {
+                            let val = obj[key];
+                            if (typeof val === 'string' && (val.trim().startsWith('[') || val.trim().startsWith('{'))) {
+                                try {
+                                    let parsed = JSON.parse(val);
+                                    harvestArrays(parsed);
+                                } catch(e) {}
+                            } else if (typeof val === 'object' && val !== null) {
+                                harvestArrays(val);
                             }
-                            return false;
-                        });
-                        if (idxR !== -1) {
-                            detectedRecap = kumpulArray[idxR];
-                            let sisa = kumpulArray.filter((_, i) => i !== idxR);
-                            if (sisa.length > 0) detectedReservations = sisa[0];
-                        } else {
-                            detectedRecap = kumpulArray[0];
-                            if (kumpulArray.length > 1) detectedReservations = kumpulArray[1];
                         }
-                    }
-
-                    if (detectedRecap.length === 0) {
-                        let d = res.recap || res.data || res.content || [];
-                        if (typeof d === 'string') { try{ d = JSON.parse(d); }catch(e){} }
-                        if (Array.isArray(d)) detectedRecap = d;
                     }
                 }
 
-                // JIKA VALIDASI AKHIR TETAP KOSONG (Seperti kasus dalam screenshot user di mana server hanya merespon {"status":"success"} tanpa isi)
+                harvestArrays(res);
+
+                // 2. FALLBACK LEVEL 2
+                if (detectedRecap.length === 0 && res) {
+                    for (let k in res) {
+                        if (Array.isArray(res[k]) && res[k].length > 0) {
+                            if (k.toLowerCase().includes('recap') || k.toLowerCase().includes('rekap') || k.toLowerCase().includes('history') || k.toLowerCase().includes('data')) {
+                                detectedRecap = res[k];
+                            } else if (k.toLowerCase().includes('reserve') || k.toLowerCase().includes('antrean') || k.toLowerCase().includes('jadwal')) {
+                                detectedReservations = res[k];
+                            }
+                        }
+                    }
+                }
+
+                // 3. FALLBACK LEVEL 3
+                if (detectedRecap.length === 0 && res.data && typeof res.data === 'object') {
+                    let d = res.data;
+                    if (Array.isArray(d.recap)) detectedRecap = d.recap;
+                    if (Array.isArray(d.reservations)) detectedReservations = d.reservations;
+                    if (Array.isArray(d)) detectedRecap = d;
+                }
+
+                // 4. KUNCI PENGAMAN MUTLAK (ANTI-OVERWRITE KOSONG)
                 if (detectedRecap.length === 0 && detectedReservations.length === 0) {
-                    endDatabaseAnimationLoader(false, "Isi Database di Cloud Memang Kosong.");
-                    alert("ℹ️ KONEKSI SUKSES, NAMUN DATA DI DRIVE ANDA KOSONG:\n\nKotak diagnosis mendeteksi server cloud Anda merespon: '" + textMentah.trim() + "'.\n\nArtinya, skrip Web App terhubung dengan baik tetapi file database di Google Drive Anda memang tidak berisi data transaksi.\n\nSolusi: Silakan pakai tombol 'RESTORE DATA OFFLINE' di bawahnya untuk memasukkan file data 'Backup_Ledger_Adzkiya_1779723559391.json' yang tadi Anda upload ke saya.");
-                    return;
+                    let textData = res.data || res.content || res.output || "";
+                    if (typeof textData === 'string' && textData.length > 50) {
+                        try {
+                            let parsedText = JSON.parse(textData);
+                            if (Array.isArray(parsedText.recap)) detectedRecap = parsedText.recap;
+                            if (Array.isArray(parsedText.reservations)) detectedReservations = parsedText.reservations;
+                        } catch(e){}
+                    }
+                    
+                    if (detectedRecap.length === 0 && detectedReservations.length === 0) {
+                        endDatabaseAnimationLoader(false, "Gagal: Data di Cloud Drive kosong atau format Apps Script tidak cocok.");
+                        alert("Peringatan: Gagal mengekstrak data dari server cloud. Restore dibatalkan untuk melindungi data lokal Anda.");
+                        return;
+                    }
                 }
 
                 if (!Array.isArray(detectedRecap)) detectedRecap = [];
                 if (!Array.isArray(detectedReservations)) detectedReservations = [];
 
-                let detectedLogo = res.logo || res.savedLogo || "";
+                let detectedLogo = res.logo || res.savedLogo || (res.data ? res.data.logo : "");
 
                 animatePercentageCounter(currentSimulatedProgress, 100, 400, (val) => { updateLoaderPercentage(val); }, () => {
                     localStorage.setItem("adzkiya_reservation_data", JSON.stringify(detectedReservations));
                     localStorage.setItem("adzkiya_recap_data", JSON.stringify(detectedRecap));
+                    
                     if (detectedLogo) {
                         base64LogoDataStream = detectedLogo;
                         const uiWatermark = document.getElementById('uiWatermarkView');
-                        if (uiWatermark) { uiWatermark.src = base64LogoDataStream; uiWatermark.style.display = "block"; }
+                        if (uiWatermark) {
+                            uiWatermark.src = base64LogoDataStream;
+                            uiWatermark.style.display = "block";
+                        }
                     }
+                    
                     endDatabaseAnimationLoader(true, "Sinkronisasi Cloud Drive Berhasil!", () => {
                         loadReservationRecords();
                         loadRecapRecords();
@@ -1481,8 +1458,7 @@
             })
             .catch(err => {
                 serverResponded = true;
-                endDatabaseAnimationLoader(false, "Gagal memproses data cloud.");
-                alert("Error Jaringan / CORS: " + err.message);
+                endDatabaseAnimationLoader(false, "Gangguan koneksi lintas platform / CORS.");
             });
         }
     }
